@@ -8,41 +8,32 @@
 # See https://aboutcode-orgnexB/python-inspector for support or download.
 # See https://aboutcode.org for more information about nexB OSS projects.
 #
+from __future__ import annotations
 
 import os
 from netrc import netrc
-from typing import Dict
-from typing import List
-from typing import NamedTuple
-from typing import Sequence
+from pathlib import Path
+from typing import Dict, List, NamedTuple, Sequence
 
 from packageurl import PackageURL
 from packvers.requirements import Requirement
-from resolvelib import BaseReporter
-from resolvelib import Resolver
+from resolvelib import BaseReporter, Resolver
 
-from _packagedcode.models import DependentPackage
-from _packagedcode.models import PackageData
-from _packagedcode.pypi import PipRequirementsFileHandler
-from _packagedcode.pypi import PythonSetupPyHandler
-from _packagedcode.pypi import can_process_dependent_package
-from python_inspector import DEFAULT_PYTHON_VERSION
-from python_inspector import dependencies
-from python_inspector import utils
-from python_inspector import utils_pypi
+from _packagedcode.models import DependentPackage, PackageData
+from _packagedcode.pypi import PipRequirementsFileHandler, PythonSetupPyHandler, can_process_dependent_package
+from python_inspector import dependencies, settings, utils, utils_pypi
 from python_inspector.package_data import get_pypi_data_from_purl
-from python_inspector.resolution import PythonInputProvider
-from python_inspector.resolution import format_pdt_tree
-from python_inspector.resolution import format_resolution
-from python_inspector.resolution import get_environment_marker_from_environment
-from python_inspector.resolution import get_package_list
-from python_inspector.resolution import get_python_version_from_env_tag
-from python_inspector.resolution import get_reqs_insecurely
-from python_inspector.resolution import get_requirements_from_python_manifest
-from python_inspector.utils_pypi import PLATFORMS_BY_OS
-from python_inspector.utils_pypi import PYPI_SIMPLE_URL
-from python_inspector.utils_pypi import Environment
-from python_inspector.utils_pypi import valid_python_versions
+from python_inspector.resolution import (
+    PythonInputProvider,
+    format_pdt_tree,
+    format_resolution,
+    get_environment_marker_from_environment,
+    get_package_list,
+    get_python_version_from_env_tag,
+    get_reqs_insecurely,
+    get_requirements_from_python_manifest,
+)
+from python_inspector.utils_pypi import PLATFORMS_BY_OS, Environment, PypiSimpleRepository, valid_python_versions
 
 
 class Resolution(NamedTuple):
@@ -64,8 +55,7 @@ class Resolution(NamedTuple):
             # clean file paths
             for file in files:
                 path = file["path"]
-                file["path"] = utils.remove_test_data_dir_variable_prefix(
-                    path=path)
+                file["path"] = utils.remove_test_data_dir_variable_prefix(path=path)
         return {
             "files": files,
             "packages": [package for package in self.packages],
@@ -76,10 +66,10 @@ class Resolution(NamedTuple):
 def resolve_dependencies(
     requirement_files=tuple(),
     setup_py_file=None,
-    specifiers=tuple(),
+    specifiers=(),
     python_version=None,
     operating_system=None,
-    index_urls=tuple([PYPI_SIMPLE_URL]),
+    index_urls: tuple[str, ...] = settings.INDEX_URL,
     pdt_output=None,
     netrc_file=None,
     max_rounds=200000,
@@ -105,40 +95,43 @@ def resolve_dependencies(
     to PyPI.org
     """
 
+    if verbose:
+        settings.VERBOSE = True
+
     if not operating_system:
-        raise Exception(f"No operating system provided.")
+        raise Exception("No operating system provided.")
     if operating_system not in PLATFORMS_BY_OS:
         raise ValueError(
-            f"Invalid operating system: {operating_system}. "
-            f"Must be one of: {', '.join(PLATFORMS_BY_OS.keys())}"
+            f"Invalid operating system: {operating_system}. Must be one of: {', '.join(PLATFORMS_BY_OS.keys())}"
         )
 
     if not python_version:
-        raise Exception(f"No python version provided.")
+        raise Exception("No python version provided.")
     if python_version not in valid_python_versions:
         raise ValueError(
-            f"Invalid python version: {python_version}. "
-            f"Must be one of: {', '.join(valid_python_versions)}"
+            f"Invalid python version: {python_version}. Must be one of: {', '.join(valid_python_versions)}"
         )
 
     if verbose:
         printer("Resolving dependencies...")
 
-    if netrc_file:
-        if not os.path.exists(netrc_file):
-            raise Exception(f"Missing netrc file {netrc_file}")
+    if netrc_file and not Path.exists(netrc_file):
+        raise Exception(f"Missing netrc file {netrc_file}")
 
     if not netrc_file:
-        netrc_file = os.path.join(os.path.expanduser("~"), ".netrc")
-        if not os.path.exists(netrc_file):
-            netrc_file = os.path.join(os.path.expanduser("~"), "_netrc")
-            if not os.path.exists(netrc_file):
+        netrc_file = Path(Path.home() / ".netrc")
+        if not netrc_file.exists():
+            netrc_file = Path(Path.home() / "_netrc")
+            if not netrc_file.exists():
                 netrc_file = None
+
+    if verbose:
+        printer(f"Netrc file: {netrc_file}")
 
     if netrc_file:
         if verbose:
-            printer(f"Using netrc file {netrc_file}")
-        parsed_netrc = netrc(netrc_file)
+            printer(f"Using netrc file {netrc_file.as_posix()}")
+        parsed_netrc = netrc(netrc_file.as_posix())
     else:
         parsed_netrc = None
 
@@ -147,32 +140,27 @@ def resolve_dependencies(
 
     files = []
 
-    if PYPI_SIMPLE_URL not in index_urls:
-        index_urls = tuple([PYPI_SIMPLE_URL]) + tuple(index_urls)
-
     # requirements
     for req_file in requirement_files:
-        deps = dependencies.get_dependencies_from_requirements(
-            requirements_file=req_file)
+        deps = dependencies.get_dependencies_from_requirements(requirements_file=req_file)
         for extra_data in dependencies.get_extra_data_from_requirements(requirements_file=req_file):
-            index_urls = (
-                *index_urls, *tuple(extra_data.get("extra_index_urls") or []))
-            index_urls = (
-                *index_urls, *tuple(extra_data.get("index_url") or []))
+            extra_index_urls = extra_data.get("extra_index_urls", [])
+            index_url = extra_data.get("index_url") or []
+            if isinstance(extra_index_urls, list):
+                index_urls = (*index_urls, *tuple(extra_index_urls))
+            if isinstance(index_url, str):
+                index_urls = (*index_urls, index_url)
         direct_dependencies.extend(deps)
-        package_data = [
-            pkg_data.to_dict() for pkg_data in PipRequirementsFileHandler.parse(location=req_file)
-        ]
+        package_data = [pkg_data.to_dict() for pkg_data in PipRequirementsFileHandler.parse(location=req_file)]
         if generic_paths:
-            req_file = utils.remove_test_data_dir_variable_prefix(
-                path=req_file)
+            req_file = utils.remove_test_data_dir_variable_prefix(path=req_file)
 
         files.append(
-            dict(
-                type="file",
-                path=req_file,
-                package_data=package_data,
-            )
+            {
+                "type": "file",
+                "path": req_file,
+                "package_data": package_data,
+            }
         )
 
     # specs
@@ -213,26 +201,24 @@ def resolve_dependencies(
 
             if not package_data.dependencies:
                 reqs = get_requirements_from_python_manifest(
-                    sdist_location=os.path.dirname(setup_py_file),
+                    sdist_location=Path(setup_py_file).parent.as_posix(),
                     setup_py_location=setup_py_file,
                     files=[setup_py_file],
                     analyze_setup_py_insecurely=analyze_setup_py_insecurely,
                 )
-                setup_py_file_deps = list(
-                    get_dependent_packages_from_reqs(reqs))
+                setup_py_file_deps = list(get_dependent_packages_from_reqs(reqs))
                 direct_dependencies.extend(setup_py_file_deps)
 
         package_data.dependencies = setup_py_file_deps
         file_package_data = [package_data.to_dict()]
         if generic_paths:
-            setup_py_file = utils.remove_test_data_dir_variable_prefix(
-                path=setup_py_file)
+            setup_py_file = utils.remove_test_data_dir_variable_prefix(path=setup_py_file)
         files.append(
-            dict(
-                type="file",
-                path=setup_py_file,
-                package_data=file_package_data,
-            )
+            {
+                "type": "file",
+                "path": setup_py_file,
+                "package_data": file_package_data,
+            }
         )
 
     if not direct_dependencies:
@@ -255,25 +241,20 @@ def resolve_dependencies(
     if verbose:
         printer(f"environment: {environment}")
 
-    repos = []
+    repos: list[PypiSimpleRepository] = []
+
     if not use_pypi_json_api:
         # Collect PyPI repos
         for index_url in index_urls:
             index_url = index_url.strip("/")
-            existing = utils_pypi.DEFAULT_PYPI_REPOS_BY_URL.get(index_url)
-            if existing:
-                existing.use_cached_index = use_cached_index
-                repos.append(existing)
+            if index_url in settings.INDEX_URL:
+                repos.append(PypiSimpleRepository(index_url))
             else:
                 credentials = None
                 if parsed_netrc:
-                    login, password = utils.get_netrc_auth(
-                        index_url, parsed_netrc)
-                    credentials = (
-                        dict(login=login,
-                             password=password) if login and password else None
-                    )
-                repo = utils_pypi.PypiSimpleRepository(
+                    login, password = utils.get_netrc_auth(index_url, parsed_netrc)
+                    credentials = {"login": login, "password": password} if login and password else None
+                repo = PypiSimpleRepository(
                     index_url=index_url,
                     use_cached_index=use_cached_index,
                     credentials=credentials,
@@ -283,7 +264,7 @@ def resolve_dependencies(
     if verbose:
         printer("repos:")
         for repo in repos:
-            printer(f" {repo}")
+            printer(f" {repo.index_url}")
 
     # resolve dependencies proper
     resolution, purls = resolve(
@@ -304,9 +285,7 @@ def resolve_dependencies(
             [
                 pkg.to_dict()
                 for pkg in list(
-                    get_pypi_data_from_purl(
-                        package, repos=repos, environment=environment, prefer_source=prefer_source
-                    )
+                    get_pypi_data_from_purl(package, repos=repos, environment=environment, prefer_source=prefer_source)
                 )
             ],
         )
@@ -333,6 +312,7 @@ def resolve(
     pdt_output=False,
     analyze_setup_py_insecurely=False,
     ignore_errors=False,
+    verbose: bool = False,
 ):
     """
     Resolve dependencies given a ``direct_dependencies`` list of
@@ -366,13 +346,14 @@ def resolve(
 
 def get_resolved_dependencies(
     requirements: List[Requirement],
-    environment: Environment = None,
-    repos: Sequence[utils_pypi.PypiSimpleRepository] = tuple(),
+    environment: Environment,
+    repos: Sequence[PypiSimpleRepository] = tuple(),
     as_tree: bool = False,
     max_rounds: int = 200000,
     pdt_output: bool = False,
     analyze_setup_py_insecurely: bool = False,
     ignore_errors: bool = False,
+    verbose: bool = False,
 ):
     """
     Return resolved dependencies of a ``requirements`` list of Requirement for
@@ -382,6 +363,7 @@ def get_resolved_dependencies(
     Used the provided ``repos`` list of PypiSimpleRepository.
     If empty, use instead the PyPI.org JSON API exclusively instead
     """
+
     resolver = Resolver(
         provider=PythonInputProvider(
             environment=environment,
@@ -391,9 +373,11 @@ def get_resolved_dependencies(
         ),
         reporter=BaseReporter(),
     )
-    resolver_results = resolver.resolve(
-        requirements=requirements, max_rounds=max_rounds)
+
+    resolver_results = resolver.resolve(requirements=requirements, max_rounds=max_rounds)
+
     package_list = get_package_list(results=resolver_results)
+
     if pdt_output:
         return (format_pdt_tree(resolver_results), package_list)
     return (

@@ -8,24 +8,25 @@
 # See https://github.com/aboutcode-org/python-inspector for support or download.
 # See https://aboutcode.org for more information about nexB OSS projects.
 #
+from __future__ import annotations
 
+from collections.abc import Generator
 from typing import List
 
 from packageurl import PackageURL
 
 from _packagedcode.models import PackageData
-from _packagedcode.pypi import get_declared_license
-from _packagedcode.pypi import get_description
-from _packagedcode.pypi import get_keywords
-from _packagedcode.pypi import get_parties
-from python_inspector import utils_pypi
+from _packagedcode.pypi import get_declared_license, get_description, get_keywords, get_parties
+from python_inspector import settings, utils_pypi
 from python_inspector.resolution import get_python_version_from_env_tag
-from python_inspector.utils_pypi import Environment
-from python_inspector.utils_pypi import PypiSimpleRepository
+from python_inspector.utils_pypi import Environment, PypiSimpleRepository
 
 
 def get_pypi_data_from_purl(
-    purl: str, environment: Environment, repos: List[PypiSimpleRepository], prefer_source: bool
+    purl: str,
+    environment: Environment,
+    repos: list[PypiSimpleRepository],
+    prefer_source: bool,
 ) -> PackageData:
     """
     Generate `Package` object from the `purl` string of pypi type
@@ -36,14 +37,17 @@ def get_pypi_data_from_purl(
     ``prefer_source`` is a boolean value to prefer source distribution over wheel,
     if no source distribution is available then wheel is used
     """
-    purl = PackageURL.from_string(purl)
-    name = purl.name
-    version = purl.version
+    packageurl: PackageURL = PackageURL.from_string(purl)
+    name = packageurl.name
+    version = packageurl.version
     if not version:
         raise Exception("Version is not specified in the purl")
     base_path = "https://pypi.org/pypi"
     api_url = f"{base_path}/{name}/{version}/json"
     from python_inspector.resolution import get_response
+
+    if settings.DEBUG:
+        print(f"        Get package data from {api_url}")
 
     response = get_response(api_url)
     if not response:
@@ -53,13 +57,12 @@ def get_pypi_data_from_purl(
     project_urls = info.get("project_urls") or {}
     code_view_url = get_pypi_codeview_url(project_urls)
     bug_tracking_url = get_pypi_bugtracker_url(project_urls)
-    python_version = get_python_version_from_env_tag(
-        python_version=environment.python_version)
+    python_version = get_python_version_from_env_tag(python_version=environment.python_version)
     valid_distribution_urls = []
 
     valid_distribution_urls.append(
         get_sdist_download_url(
-            purl=purl,
+            purl=packageurl,
             repos=repos,
             python_version=python_version,
         )
@@ -70,7 +73,7 @@ def get_pypi_data_from_purl(
     if not valid_distribution_urls or not prefer_source:
         wheel_urls = list(
             get_wheel_download_urls(
-                purl=purl,
+                purl=packageurl,
                 repos=repos,
                 environment=environment,
                 python_version=python_version,
@@ -108,7 +111,7 @@ def get_pypi_data_from_purl(
                 maintainer_key="maintainer",
                 maintainer_email_key="maintainer_email",
             ),
-            **purl.to_dict(),
+            **packageurl.to_dict(),
         )
 
 
@@ -144,7 +147,7 @@ def get_wheel_download_urls(
     repos: List[PypiSimpleRepository],
     environment: Environment,
     python_version: str,
-) -> List[str]:
+) -> Generator[str, None, None]:
     """
     Return a list of download urls for the given purl.
     """
@@ -159,9 +162,7 @@ def get_wheel_download_urls(
             yield wheel.download_url
 
 
-def get_sdist_download_url(
-    purl: PackageURL, repos: List[PypiSimpleRepository], python_version: str
-) -> str:
+def get_sdist_download_url(purl: PackageURL, repos: List[PypiSimpleRepository], python_version: str) -> str:
     """
     Return a list of download urls for the given purl.
     """

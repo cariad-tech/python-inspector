@@ -8,12 +8,13 @@
 # See https://github.com/aboutcode-org/python-inspector for support or download.
 # See https://aboutcode.org for more information about nexB OSS projects.
 #
+from __future__ import annotations
 
 import json
 import os
-from typing import Dict
-from typing import List
-from typing import NamedTuple
+from pathlib import Path
+from typing import Any, List, NamedTuple
+from urllib.parse import ParseResult, urlparse
 
 import requests
 
@@ -23,10 +24,10 @@ def get_netrc_auth(url, netrc):
     Return login and password if url is in netrc
     else return login and password as None
     """
-    hosts = netrc.hosts
-    if url in hosts:
-        url_auth = hosts.get(url)
-        # netrc returns a tuple of (login, account, password)
+    parsed_url: ParseResult = urlparse(url)
+    url_auth = netrc.authenticators(parsed_url.netloc)
+
+    if url_auth:
         return (url_auth[0], url_auth[2])
     return (None, None)
 
@@ -36,7 +37,7 @@ def contain_string(string: str, files: List) -> bool:
     Return True if the ``string`` is contained in any of the ``files`` list of file paths.
     """
     for file in files:
-        if not os.path.exists(file):
+        if not Path(file).exists():
             continue
         with open(file, encoding="utf-8") as f:
             # TODO also consider other file names
@@ -64,12 +65,13 @@ class Candidate(NamedTuple):
     extras: str
 
 
-def get_response(url: str) -> Dict:
+def get_response(url: str) -> Any:
     """
     Return a mapping of the JSON response from fetching ``url``
     or None if the ``url`` cannot be fetched..
     """
-    resp = requests.get(url)
+    session = requests.Session()
+    resp = session.get(url)
     if resp.status_code == 200:
         return resp.json()
 
